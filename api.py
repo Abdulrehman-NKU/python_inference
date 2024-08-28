@@ -12,6 +12,7 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 total_inference_it_can_handle = 2
 
+
 inference_stopped_for_user_id = None
 inference_stopped_for_model_id = None
 
@@ -20,7 +21,6 @@ inference_paused_for_model_id = None
 
 
 thread_lock = threading.Lock()
-
 
 redisClient = redis.Redis()
 
@@ -234,6 +234,131 @@ def run():
         jsonify(
             {
                 "message": f"Inference requested for {model_id} for {infer_time} seconds",
+                "status": "Requested",
+            }
+        ),
+        202,
+    )
+
+
+def emit_event_factory_v2(model_name, version_id, data_id, total_infer_time=30):
+    def emit_event(event, status, elapsed_time):
+        socketio.emit(
+            "v2" + "_" + event,
+            {
+                "model_name": model_name,
+                "version_id": version_id,
+                "data_id": data_id,
+                "total_infer_time": total_infer_time,
+                "elapsed_time": elapsed_time,
+                "status": status,
+            },
+        )
+
+    return emit_event
+
+
+def long_running_task_v2(
+    model_name, version_id, data_id, total_infer_time=30, elapsed_time=0
+):
+    global total_inference_it_can_handle
+
+    emit_event = emit_event_factory_v2(
+        model_name, version_id, data_id, total_infer_time
+    )
+
+    with thread_lock:
+        if total_inference_it_can_handle == 0:
+            TASK_ID = f"{model_name}_{version_id}"
+            redisClient.lpush(PENDING_TASK_QUEUE, TASK_ID)
+            redisClient.hset(
+                name=PENDING_TASK_DATA_HASH_MAP,
+                key=TASK_ID,
+                value=json.dumps(
+                    {
+                        "model_name": model_name,
+                        "version_id": version_id,
+                        "data_id": data_id,
+                        "total_infer_time": total_infer_time,
+                        "elapsed_time": elapsed_time,
+                        "status": "Queued",
+                    }
+                ),
+            )
+            emit_event("queued", "Queued", elapsed_time)
+            return  # QUEUED
+
+    total_inference_it_can_handle -= 1
+
+    emit_event("start", "Started", elapsed_time)
+
+    infer_time = int(total_infer_time) - elapsed_time
+    start_time = time.time()
+
+    while (time.time() - start_time) < infer_time:
+        time.sleep(5)  # Sleep for 5 seconds
+
+        new_elapsed_time = elapsed_time + int(time.time() - start_time)
+
+        emit_event("update", "In Progress", new_elapsed_time)
+
+    # To avoid race conditions
+    with thread_lock:
+        total_inference_it_can_handle += 1
+
+    emit_event("complete", "Completed", total_infer_time)
+
+    with thread_lock:
+        next_queued_task = redisClient.rpop(PENDING_TASK_QUEUE)
+        if next_queued_task:
+            next_queued_task_data = redisClient.hget(
+                name=PENDING_TASK_DATA_HASH_MAP, key=next_queued_task
+            )
+            if next_queued_task_data:
+                next_queued_task_data = json.loads(next_queued_task_data)
+                thread = threading.Thread(
+                    target=long_running_task_v2,
+                    args=(
+                        next_queued_task_data["model_name"],
+                        next_queued_task_data["version_id"],
+                        next_queued_task_data["data_id"],
+                        next_queued_task_data["total_infer_time"],
+                        next_queued_task_data["elapsed_time"],
+                    ),
+                )
+                thread.start()
+                redisClient.hdel(PENDING_TASK_DATA_HASH_MAP, next_queued_task)
+            else:
+                print("Error: No data found for the next queued task.")
+
+
+@app.route("/v2/run", methods=["GET"])
+def run_v2():
+
+    data = request.args
+    model_name = data.get("model_name")
+    version_id = data.get("version_id")
+    data_id = data.get("data_id")
+    elapsed_time = int(data.get("elapsed_time", 0))
+    infer_time = 30
+
+    if model_name is None:
+        return (
+            jsonify({"message": "Please provide a user_id"}),
+            400,
+        )
+
+    # Start the long running task in a separate thread
+    thread = threading.Thread(
+        target=long_running_task_v2,
+        args=(model_name, version_id, data_id, infer_time, elapsed_time),
+    )
+    thread.start()
+
+    return (
+        jsonify(
+            {
+                "message": f"Inference requested for {model_name} for {infer_time} seconds",
                 "status": "Requested",
             }
         ),
