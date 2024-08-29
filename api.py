@@ -5,6 +5,9 @@ from flask_cors import CORS
 from flask_socketio import SocketIO
 import redis
 import json
+import requests
+from file_system import download_file
+from CONSTANTS import OLD_JAVA_BACK_END_URL
 
 app = Flask(__name__)
 CORS(app)
@@ -364,6 +367,27 @@ def run_v2():
         ),
         202,
     )
+
+
+@app.route("/download_project_files", methods=["GET"])
+def download():
+    # Download the file
+    args = request.args
+    project_id = args.get("project_id")
+    if project_id is None:
+        return jsonify({"message": "Please provide a project_id"}), 400
+    response = requests.get(
+        f"{OLD_JAVA_BACK_END_URL}/mark/projectImg/downLoadImgTxt?projectId={project_id}"
+    )
+    if response.status_code != 200:
+        return jsonify({"message": "Error downloading file"}), 500
+
+    text = response.text
+    # split the text with \n and pass each line to download_file
+    for line in text.split("\n"):
+        if line:
+            download_file(line, project_id, line.split("/")[-1])
+    return jsonify({"message": "Files downloaded successfully"}), 200
 
 
 def compare_user_id_and_model_id_with_global(user_id, model_id, check_for_paused=False):
