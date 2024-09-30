@@ -1,6 +1,7 @@
 .venv
 myenv
 
+venv
 .venv/*
 __pycache__
 downloads

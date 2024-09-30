@@ -7,13 +7,12 @@ import redis
 import json
 import requests
 from file_system import download_file
-from CONSTANTS import OLD_JAVA_BACK_END_URL
+from CONSTANTS import OLD_JAVA_BACK_END_URL,RESOURCE_BACKEND_URL,MACHINE_ID
+from resource_monitor import checkIfResourceAvailable
 
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
-
-total_inference_it_can_handle = 2
 
 
 inference_stopped_for_user_id = None
@@ -30,9 +29,13 @@ redisClient = redis.Redis()
 
 # Can be done with out hash_set, just add the stringified task in the queue
 
-
 PENDING_TASK_QUEUE = "PENDING_TASK_QUEUE"
 PENDING_TASK_DATA_HASH_MAP = "PENDING_TASK_DATA_HASH_MAP"
+
+
+
+def update_compute_resources():
+    requests.put(f"{RESOURCE_BACKEND_URL}?machineId={MACHINE_ID}")
 
 
 def emit_event_factory(user_id, model_id, total_infer_time):
@@ -59,12 +62,10 @@ def long_running_task(model_id, total_infer_time, user_id, elapsed_time=0):
     global inference_paused_for_user_id
     global inference_paused_for_model_id
 
-    global total_inference_it_can_handle
-
     emit_event = emit_event_factory(user_id, model_id, total_infer_time)
 
     with thread_lock:
-        if total_inference_it_can_handle == 0:
+        if not checkIfResourceAvailable():
             TASK_ID = f"{user_id}_{model_id}"
             redisClient.lpush(PENDING_TASK_QUEUE, TASK_ID)
             redisClient.hset(
@@ -83,8 +84,8 @@ def long_running_task(model_id, total_infer_time, user_id, elapsed_time=0):
             emit_event("queued", "Queued", elapsed_time)
             return  # QUEUED
 
-    total_inference_it_can_handle -= 1
 
+    update_compute_resources()
     emit_event("start", "Started", elapsed_time)
 
     infer_time = int(total_infer_time) - elapsed_time
@@ -115,13 +116,10 @@ def long_running_task(model_id, total_infer_time, user_id, elapsed_time=0):
         else:
             emit_event("update", "In Progress", new_elapsed_time)
 
-    # To avoid race conditions
-    with thread_lock:
-        total_inference_it_can_handle += 1
-
     if compare_user_id_and_model_id_with_global(user_id, model_id):
         inference_stopped_for_user_id = None
         inference_stopped_for_model_id = None
+        update_compute_resources()
         emit_event("stop", "Stopped", 0)
 
     elif compare_user_id_and_model_id_with_global(
@@ -130,9 +128,11 @@ def long_running_task(model_id, total_infer_time, user_id, elapsed_time=0):
 
         inference_paused_for_model_id = None
         inference_paused_for_user_id = None
+        update_compute_resources()
         emit_event("pause", "Paused", new_elapsed_time)
 
     else:
+        update_compute_resources()
         emit_event("complete", "Completed", total_infer_time)
 
     with thread_lock:
@@ -264,14 +264,13 @@ def emit_event_factory_v2(model_name, version_id, data_id, total_infer_time=30):
 def long_running_task_v2(
     model_name, version_id, data_id, total_infer_time=30, elapsed_time=0
 ):
-    global total_inference_it_can_handle
 
     emit_event = emit_event_factory_v2(
         model_name, version_id, data_id, total_infer_time
     )
 
     with thread_lock:
-        if total_inference_it_can_handle == 0:
+        if not checkIfResourceAvailable():
             TASK_ID = f"{model_name}_{version_id}"
             redisClient.lpush(PENDING_TASK_QUEUE, TASK_ID)
             redisClient.hset(
@@ -291,8 +290,6 @@ def long_running_task_v2(
             emit_event("queued", "Queued", elapsed_time)
             return  # QUEUED
 
-    total_inference_it_can_handle -= 1
-
     emit_event("start", "Started", elapsed_time)
 
     infer_time = int(total_infer_time) - elapsed_time
@@ -304,10 +301,6 @@ def long_running_task_v2(
         new_elapsed_time = elapsed_time + int(time.time() - start_time)
 
         emit_event("update", "In Progress", new_elapsed_time)
-
-    # To avoid race conditions
-    with thread_lock:
-        total_inference_it_can_handle += 1
 
     emit_event("complete", "Completed", total_infer_time)
 
