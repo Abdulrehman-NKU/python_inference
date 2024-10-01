@@ -1,4 +1,5 @@
 import psutil
+
 # import GPUtil
 
 
@@ -13,8 +14,8 @@ def checkIfResourceAvailable():
     if memory.available < MINIMUM_VIRTUAL_MEMORY_REQUIRED:
         return False
 
-    elif psutil.cpu_count(logical=False) < MINIMUM_CPU_CORES_REQUIRED:
-        return False
+    # elif psutil.cpu_count(logical=False) < MINIMUM_CPU_CORES_REQUIRED:
+    #     return False
 
     # try:
     #     gpus = GPUtil.getGPUs()

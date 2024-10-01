@@ -7,8 +7,9 @@ import redis
 import json
 import requests
 from file_system import download_file
-from CONSTANTS import OLD_JAVA_BACK_END_URL,RESOURCE_BACKEND_URL,MACHINE_ID
+from CONSTANTS import OLD_JAVA_BACK_END_URL, RESOURCE_BACKEND_URL, MACHINE_ID
 from resource_monitor import checkIfResourceAvailable
+import psutil
 
 app = Flask(__name__)
 CORS(app)
@@ -33,9 +34,8 @@ PENDING_TASK_QUEUE = "PENDING_TASK_QUEUE"
 PENDING_TASK_DATA_HASH_MAP = "PENDING_TASK_DATA_HASH_MAP"
 
 
-
 def update_compute_resources():
-    requests.put(f"{RESOURCE_BACKEND_URL}?machineId={MACHINE_ID}")
+    return 0
 
 
 def emit_event_factory(user_id, model_id, total_infer_time):
@@ -48,6 +48,7 @@ def emit_event_factory(user_id, model_id, total_infer_time):
                 "total_infer_time": total_infer_time,
                 "elapsed_time": elapsed_time,
                 "status": status,
+                "machineId": MACHINE_ID,
             },
         )
 
@@ -83,7 +84,6 @@ def long_running_task(model_id, total_infer_time, user_id, elapsed_time=0):
             )
             emit_event("queued", "Queued", elapsed_time)
             return  # QUEUED
-
 
     update_compute_resources()
     emit_event("start", "Started", elapsed_time)
@@ -214,6 +214,17 @@ def run():
     print(f"Attachment to process alogngside is:{attachment}")
 
     if user_id is None:
+        socketio.emit(
+            "stop",
+            {
+                "user_id": user_id,
+                "model_id": model_id,
+                "total_infer_time": infer_time,
+                "elapsed_time": elapsed_time,
+                "status": "Stopped",
+                "machineId": MACHINE_ID,
+            },
+        )
         return (
             jsonify({"message": "Please provide a user_id"}),
             400,
